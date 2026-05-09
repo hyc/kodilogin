@@ -1,3 +1,12 @@
+/* Copyright (C) 2026 by Howard Chu.
+ * http://www.highlandsun.com/hyc/
+ *
+ * You may distribute this program under the terms of the
+ * GNU General Public License version 2.
+ */
+
+/* simple thread pool */
+
 #include <stdlib.h>
 #include <pthread.h>
 #include <errno.h>
