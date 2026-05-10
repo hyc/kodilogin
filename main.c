@@ -23,8 +23,10 @@
 #include <string.h>
 
 #include <openssl/ssl.h>
+#include <openssl/rand.h>
 
 #include "tpool.h"
+#include "utils.h"
 
 #define	DEFPORT	3000
 #define DEFTHREADS	4
@@ -44,6 +46,8 @@ SSL_CTX *myctx;
 typedef struct client {
 	SSL *c_ssl;
 	struct in_addr c_addr;
+	char c_addrstr[INET_ADDRSTRLEN+1];
+	int c_addrstrlen;
 	int c_fd;
 } client;
 
@@ -166,6 +170,12 @@ int main( int argc, char *argv[] )
 		}
 	}
 
+	{
+		unsigned int seed;
+		RAND_bytes((unsigned char *)&seed, sizeof(seed));
+		srandom(seed);
+	}
+
 	if (myctx) {
 		my_send = my_ssl_send;
 		my_recv = my_ssl_recv;
@@ -205,6 +215,7 @@ int main( int argc, char *argv[] )
 	sa.sin_addr.s_addr = myaddr.s_addr;
 
 	tpool_init(my_max_thr);
+	cacheInit();
 
 	if (bind(tcp, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
 		sock_err("tcp bind");
@@ -228,10 +239,10 @@ int main( int argc, char *argv[] )
 	}
 }
 
-void do_resp(client *cp, char *code, char *mtype, char *text)
+void do_resp(client *cp, char *code, char *mtype, myval *text)
 {
 	char buf[16384], *pbuf, *ptr;
-	int len = strlen(text);
+	int len = text->mv_len;
 	if (len+100 > sizeof(buf)) {
 		pbuf = malloc(len+100);
 	} else {
@@ -241,7 +252,7 @@ void do_resp(client *cp, char *code, char *mtype, char *text)
 	ptr += sprintf(ptr, "HTTP/1.1 %s\r\n", code);
 	ptr += sprintf(ptr, "Content-Type: %s\r\n", mtype);
 	ptr += sprintf(ptr, "Content-Length: %d\r\n\r\n", len);
-	strcpy(ptr, text);
+	memcpy(ptr, text->mv_val, text->mv_len);
 	ptr += len;
 	len = ptr - pbuf;
 	my_send(cp, pbuf, len);
@@ -253,6 +264,7 @@ void *do_client(void *arg) {
 	client *cp = arg;
 	char ibuf[32768], *ptr;
 	int num;
+	myval resp;
 
 	if (cp->c_ssl) {
 		if (!SSL_accept(cp->c_ssl)) {
@@ -260,23 +272,68 @@ void *do_client(void *arg) {
 			return NULL;
 		}
 	}
+
+	inet_ntop(AF_INET, &cp->c_addr, cp->c_addrstr, INET_ADDRSTRLEN);
+	cp->c_addrstrlen = strlen(cp->c_addrstr);
+
 	for(;;) {
 		num = my_recv(cp, ibuf, sizeof(ibuf));
 		if (num <= 0)
 			break;
+		ibuf[num] = '\0';
 		switch(ibuf[0]) {
 		case 'G':
 			if (!strncmp(ibuf+1, "ET /ip ", sizeof("ET /ip ")-1)) {
-				inet_ntop(AF_INET, &cp->c_addr, ibuf, INET_ADDRSTRLEN);
-				do_resp(cp, CODE_OK, "text/plain", ibuf);
+				resp.mv_val = cp->c_addrstr;
+				resp.mv_len = cp->c_addrstrlen;
+				do_resp(cp, CODE_OK, "text/plain", &resp);
 				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /pin/", sizeof("ET /pin/")-1)) {
 				/* lookup existing pin */
+				myval pinv;
+				pinv.mv_val = ibuf+sizeof("GET /pin/");
+				if (pinv.mv_val + PINLEN == ' ') {
+					cacherec *cr;
+					pinv.mv_len = PINLEN;
+					cr = cacheGet(&pinv);
+					if (cr) {
+						unsigned char *ptr;
+						ptr = strstr(pinv.mv_val + PINLEN, "Authorization");
+						if (ptr && cr->c_owner.mv_len == cp->c_addrstrlen &&
+							!strncmp(cr->c_owner.mv_val, cp->c_addrstr, cp->c_addrstrlen)) {
+							ptr += sizeof("Authorization:");
+							if (!strncasecmp(ptr, "Basic ", sizeof("Basic ")-1)) {
+								
+							}
+						}
+					}
+				}
+
+
 			}
 			break;
 		case 'P':
 			if (!strncmp(ibuf+1, "OST /pin ", sizeof("OST /pin ")-1)) {
-				/* get new pin */
+				/* generate new pin */
+				unsigned char pinbuf[PINLEN+1], passbuf[129];
+				myval pinv = {pinbuf, sizeof(pinbuf)-1};
+				myval passv = {passbuf, sizeof(passbuf)-1};
+				myval prov;
+				myval owner = {cp->c_addrstr, cp->c_addrstrlen};
+				cacherec *cr;
+				int len;
+
+				prov.mv_val = strstr(ibuf, "provider=");
+				if (!prov.mv_val)
+					break;
+				prov.mv_val += sizeof("provider");
+				prov.mv_len = strlen(prov.mv_val);
+				generatePin(&pinv);
+				generatePassword(&passv);
+				cr = cacheSet(&pinv, &passv, &prov, &owner);
+				if (cr)
+					do_resp(cp, CODE_OK, "text/json", &cr->c_text);
+				my_clos(cp);
 			}
 			break;
 		}
