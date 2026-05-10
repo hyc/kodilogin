@@ -52,6 +52,8 @@ typedef struct client {
 } client;
 
 #define CODE_OK	"200 OK"
+#define CODE_ACCEPTED "202 Accepted"
+#define CODE_NOT_FOUND "404 Not Found"
 
 char *myname;
 struct in_addr myaddr;
@@ -291,8 +293,8 @@ void *do_client(void *arg) {
 			} else if (!strncmp(ibuf+1, "ET /pin/", sizeof("ET /pin/")-1)) {
 				/* lookup existing pin */
 				myval pinv;
-				pinv.mv_val = ibuf+sizeof("GET /pin/");
-				if (pinv.mv_val + PINLEN == ' ') {
+				pinv.mv_val = ibuf+sizeof("GET /pin");
+				if (pinv.mv_val[PINLEN] == ' ') {
 					cacherec *cr;
 					pinv.mv_len = PINLEN;
 					cr = cacheGet(&pinv);
@@ -303,13 +305,39 @@ void *do_client(void *arg) {
 							!strncmp(cr->c_owner.mv_val, cp->c_addrstr, cp->c_addrstrlen)) {
 							ptr += sizeof("Authorization:");
 							if (!strncasecmp(ptr, "Basic ", sizeof("Basic ")-1)) {
-								
+								myval cred;
+								cred.mv_val = ptr + sizeof("Basic");
+								ptr = strchr(cred.mv_val, '\r');
+								if (ptr) {
+									cred.mv_len = ptr - cred.mv_val;
+									if (!decode_b64_inplace(&cred)) {
+										myval pass;
+										pass.mv_val = strchr(cred.mv_val, ':');
+										if (pass.mv_val) {
+											pass.mv_val++;
+											pass.mv_len = cred.mv_len - (pass.mv_val - cred.mv_val);
+											if (pass.mv_len == cr->c_pass.mv_len &&
+												!strncmp(pass.mv_val, cr->c_pass.mv_val, pass.mv_len)) {
+												if (!cr->c_tokeninfo) {
+													resp.mv_val = "";
+													resp.mv_len = 0;
+													do_resp(cp, CODE_ACCEPTED, "text/json", &resp);
+												} else {
+													do_resp(cp, CODE_OK, "text/json", &cr->c_tokeninfo->t_text);
+												}
+												my_clos(cp);
+												break;
+											}
+										}
+									}
+								}
 							}
 						}
 					}
 				}
-
-
+				resp.mv_val = "";
+				resp.mv_len = 0;
+				do_resp(cp, CODE_NOT_FOUND, "text/plain", &resp);
 			}
 			break;
 		case 'P':

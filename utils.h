@@ -10,6 +10,7 @@ void generatePin(myval *mv);
 #define PINLEN	6
 
 typedef struct tokeninfo {
+	myval t_text;
 } tokeninfo;
 
 typedef struct cacherec {

@@ -65,9 +65,9 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 	int len;
 
 	len = sizeof("{\"pin\":\"") + pin->mv_len;
-	len += sizeof("\"password\":\"") + pass->mv_len;
-	len += sizeof("\"provider\":\"") + prov->mv_len;
-	len += sizeof("\"owner\":\"") + owner->mv_len;
+	len += sizeof(",\"password\":\"") + pass->mv_len;
+	len += sizeof(",\"provider\":\"") + prov->mv_len;
+	len += sizeof(",\"owner\":\"") + owner->mv_len;
 	len += 1;
 	cr = malloc(len + 1 + sizeof(cacherec));
 	if (!cr)
@@ -78,15 +78,15 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 	cr->c_pin.mv_val = ptr;
 	cr->c_pin.mv_len = pin->mv_len;
 	ptr = strncopy(ptr, pin->mv_val, pin->mv_len);
-	ptr = strcopy(ptr, ",\"password\":\"");
+	ptr = strcopy(ptr, "\",\"password\":\"");
 	cr->c_pass.mv_val = ptr;
 	cr->c_pass.mv_len = pass->mv_len;
 	ptr = strncopy(ptr, pass->mv_val, pass->mv_len);
-	ptr = strcopy(ptr, ",\"provider\":\"");
+	ptr = strcopy(ptr, "\",\"provider\":\"");
 	cr->c_provider.mv_val = ptr;
 	cr->c_provider.mv_len = prov->mv_len;
 	ptr = strncopy(ptr, prov->mv_val, prov->mv_len);
-	ptr = strcopy(ptr, ",\"owner\":\"");
+	ptr = strcopy(ptr, "\",\"owner\":\"");
 	cr->c_owner.mv_val = ptr;
 	cr->c_owner.mv_len = owner->mv_len;
 	ptr = strncopy(ptr, owner->mv_val, owner->mv_len);
