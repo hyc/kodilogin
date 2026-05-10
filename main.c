@@ -53,10 +53,14 @@ typedef struct client {
 
 #define CODE_OK	"200 OK"
 #define CODE_ACCEPTED "202 Accepted"
+#define CODE_FOUND "302 Found"
+#define CODE_UNAUTHORIZED "401 Unauthorized"
 #define CODE_NOT_FOUND "404 Not Found"
 
 char *myname;
 struct in_addr myaddr;
+myval callbackUrl;
+myval clientId, clientSecret;
 
 static void usage(char *prog)
 {
@@ -150,6 +154,20 @@ int main( int argc, char *argv[] )
 		}
 	}
 
+	clientId.mv_val = getenv("GOOGLE_CLIENT_ID");
+	if (!clientId.mv_val) {
+		fprintf(stderr, "GOOGLE_CLIENT_ID not set\n");
+		exit(1);
+	}
+	clientId.mv_len = strlen(clientId.mv_val);
+
+	clientSecret.mv_val = getenv("GOOGLE_CLIENT_SECRET");
+	if (!clientSecret.mv_val) {
+		fprintf(stderr, "GOOGLE_CLIENT_SECRET not set\n");
+		exit(1);
+	}
+	clientSecret.mv_len = strlen(clientSecret.mv_val);
+
 	i = ((CAcertfile != NULL) << 2) | ((certfile != NULL) << 1) | (keyfile != NULL);
 	if (i) {
 		if (i != 7) {
@@ -207,6 +225,15 @@ int main( int argc, char *argv[] )
 		freeaddrinfo(aip);
 	}
 
+	i = sizeof("http://:xxxxx/callback") + strlen(myname);
+	if (myctx) i++;
+	callbackUrl.mv_val = malloc(i+1);
+	if (!callbackUrl.mv_val) {
+		perror("malloc");
+		exit(1);
+	}
+	callbackUrl.mv_len = sprintf(callbackUrl.mv_val, "http%s://%s:%d/callback", myctx ? "s" : "", myname, port);
+
 	if ((tcp = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
 		sock_err("tcp socket");
 		exit(1);
@@ -241,10 +268,13 @@ int main( int argc, char *argv[] )
 	}
 }
 
-void do_resp(client *cp, char *code, char *mtype, myval *text)
+void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 {
 	char buf[16384], *pbuf, *ptr;
 	int len = text->mv_len;
+
+	if (headers)
+		len += headers->mv_len;
 	if (len+100 > sizeof(buf)) {
 		pbuf = malloc(len+100);
 	} else {
@@ -253,7 +283,10 @@ void do_resp(client *cp, char *code, char *mtype, myval *text)
 	ptr = pbuf;
 	ptr += sprintf(ptr, "HTTP/1.1 %s\r\n", code);
 	ptr += sprintf(ptr, "Content-Type: %s\r\n", mtype);
-	ptr += sprintf(ptr, "Content-Length: %d\r\n\r\n", len);
+	ptr += sprintf(ptr, "Content-Length: %d\r\n", len);
+	if (headers)
+		ptr = strcopy(ptr, headers->mv_val);
+	*ptr++ = '\r'; *ptr++ = '\n';
 	memcpy(ptr, text->mv_val, text->mv_len);
 	ptr += len;
 	len = ptr - pbuf;
@@ -262,9 +295,11 @@ void do_resp(client *cp, char *code, char *mtype, myval *text)
 		free(pbuf);
 }
 
+void do_authz(client *cp, cacherec *cr);
+
 void *do_client(void *arg) {
 	client *cp = arg;
-	char ibuf[32768], *ptr;
+	unsigned char ibuf[32768], *ptr;
 	int num;
 	myval resp;
 
@@ -288,7 +323,7 @@ void *do_client(void *arg) {
 			if (!strncmp(ibuf+1, "ET /ip ", sizeof("ET /ip ")-1)) {
 				resp.mv_val = cp->c_addrstr;
 				resp.mv_len = cp->c_addrstrlen;
-				do_resp(cp, CODE_OK, "text/plain", &resp);
+				do_resp(cp, CODE_OK, "text/plain", NULL, &resp);
 				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /pin/", sizeof("ET /pin/")-1)) {
 				/* lookup existing pin */
@@ -299,7 +334,6 @@ void *do_client(void *arg) {
 					pinv.mv_len = PINLEN;
 					cr = cacheGet(&pinv);
 					if (cr) {
-						unsigned char *ptr;
 						ptr = strstr(pinv.mv_val + PINLEN, "Authorization");
 						if (ptr && cr->c_owner.mv_len == cp->c_addrstrlen &&
 							!strncmp(cr->c_owner.mv_val, cp->c_addrstr, cp->c_addrstrlen)) {
@@ -321,9 +355,9 @@ void *do_client(void *arg) {
 												if (!cr->c_tokeninfo) {
 													resp.mv_val = "";
 													resp.mv_len = 0;
-													do_resp(cp, CODE_ACCEPTED, "text/json", &resp);
+													do_resp(cp, CODE_ACCEPTED, "text/json", NULL, &resp);
 												} else {
-													do_resp(cp, CODE_OK, "text/json", &cr->c_tokeninfo->t_text);
+													do_resp(cp, CODE_OK, "text/json", NULL, &cr->c_tokeninfo->t_text);
 												}
 												my_clos(cp);
 												break;
@@ -337,7 +371,36 @@ void *do_client(void *arg) {
 				}
 				resp.mv_val = "";
 				resp.mv_len = 0;
-				do_resp(cp, CODE_NOT_FOUND, "text/plain", &resp);
+				do_resp(cp, CODE_NOT_FOUND, "text/plain", NULL, &resp);
+				my_clos(cp);
+			} else if (!strncmp(ibuf+1, "ET / ", sizeof("ET /"))) {
+#define MAINPAGE "<html><head><title>Authenticate Your Kodi</title></head>\n"\
+"<body><h1>Authenticate Your Kodi</h1><form action=\"/authorize\">\n"\
+"Code: <input name=\"pin\" type=\"text\"><p><input type=\"submit\" value=\"Send\">\n"\
+"</form></body></html>\n"
+				resp.mv_val = MAINPAGE;
+				resp.mv_len = sizeof(MAINPAGE)-1;
+				do_resp(cp, CODE_OK, "text/html", NULL, &resp);
+				my_clos(cp);
+			} else if (!strncmp(ibuf+1, "ET /authorize?", sizeof("ET /authorize"))) {
+				ptr = ibuf+sizeof("ET /authorize");
+				if (ptr[PINLEN] == ' ') {
+					cacherec *cr;
+					myval pinv;
+					pinv.mv_val = ptr;
+					pinv.mv_len = PINLEN;
+					cr = cacheGet(&pinv);
+					if (cr && cr->c_owner.mv_len == cp->c_addrstrlen &&
+						!strncmp(cp->c_addrstr, cr->c_owner.mv_val, cr->c_owner.mv_len)) {
+						do_authz(cp, cr);
+						my_clos(cp);
+						break;
+					}
+				}
+				resp.mv_val = "Invalid PIN";
+				resp.mv_len = sizeof("Invalid PIN")-1;
+				do_resp(cp, CODE_UNAUTHORIZED, "text/plain", NULL, &resp);
+				my_clos(cp);
 			}
 			break;
 		case 'P':
@@ -360,7 +423,7 @@ void *do_client(void *arg) {
 				generatePassword(&passv);
 				cr = cacheSet(&pinv, &passv, &prov, &owner);
 				if (cr)
-					do_resp(cp, CODE_OK, "text/json", &cr->c_text);
+					do_resp(cp, CODE_OK, "text/json", NULL, &cr->c_text);
 				my_clos(cp);
 			}
 			break;
@@ -368,4 +431,49 @@ void *do_client(void *arg) {
 	}
 
 	return NULL;
+}
+
+#define AUTHZ_URL "https://accounts.google.com/o/oauth2/v2/auth?"
+#define CLIENT_ID "client_id="
+#define REDIRECT_URI "redirect_uri="
+#define STATE "state="
+#define RESPONSE_TYPE "response_type=code"
+#define SCOPE "scope=https://www.googleapis.com/auth/drive.readonly%20https://www.googleapis.com/auth/drive.photos.readonly%20https://www.googleapis.com/auth/photoslibrary.readonly%20profile"
+#define ACCESS_TYPE "access_type=offline"
+#define PROMPT "prompt=consent"
+
+void do_authz(client *cp, cacherec *cr)
+{
+	myval header, resp;
+	int len = sizeof(AUTHZ_URL) + sizeof(CLIENT_ID) + sizeof(REDIRECT_URI) +
+		sizeof(STATE) + sizeof(RESPONSE_TYPE) + sizeof(SCOPE) +
+		sizeof(ACCESS_TYPE) + sizeof(PROMPT) + PINLEN;
+	len += clientId.mv_len + callbackUrl.mv_len;
+
+	header.mv_val = malloc(len);
+	if (header.mv_val) {
+		unsigned char *ptr = header.mv_val;
+		ptr = strcopy(ptr, AUTHZ_URL);
+		ptr = strcopy(ptr, CLIENT_ID);
+		ptr = strcopy(ptr, clientId.mv_val);
+		*ptr++ = '&';
+		ptr = strcopy(ptr, REDIRECT_URI);
+		ptr = strcopy(ptr, callbackUrl.mv_val);
+		*ptr++ = '&';
+		ptr = strcopy(ptr, STATE);
+		ptr = strncopy(ptr, cr->c_pin.mv_val, PINLEN);
+		*ptr++ = '&';
+		ptr = strcopy(ptr, RESPONSE_TYPE);
+		*ptr++ = '&';
+		ptr = strcopy(ptr, SCOPE);
+		*ptr++ = '&';
+		ptr = strcopy(ptr, ACCESS_TYPE);
+		*ptr++ = '&';
+		ptr = strcopy(ptr, PROMPT);
+		header.mv_len = ptr - header.mv_val;
+		resp.mv_val = "";
+		resp.mv_len = 0;
+		do_resp(cp, CODE_FOUND, "text/plain", &header, &resp);
+		free(header.mv_val);
+	}
 }

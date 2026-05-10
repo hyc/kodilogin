@@ -30,3 +30,6 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *provider, myval *owner);
 cacherec *cacheGet(myval *pin);
 
 int decode_b64_inplace(myval *val);
+
+char *strcopy(char *a, const char *b);
+char *strncopy(char *a, const char *b, size_t n);
