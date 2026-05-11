@@ -328,7 +328,7 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 }
 
 void do_authz(client *cp, cacherec *cr);
-void do_token(client *cp, cacherec *cr, myval *grant, myval *code);
+void do_token(client *cp, cacherec *cr, myval *grant, myval *toktype, myval *token);
 
 void *do_client(void *arg) {
 	client *cp = arg;
@@ -443,6 +443,7 @@ void *do_client(void *arg) {
 #define INVALID_PIN "Your PIN is no longer valid. Please try again."
 #define COULDNT_AUTH "Unable to get authorization from provider. Your account doesn't have a valid drive resource."
 #define AUTH_GRANT	"authorization_code"
+#define CODE "code"
 				myval resp;
 				ptr = ibuf + sizeof("ET /callback");
 				ptr = strstr(ptr, "state=");
@@ -454,10 +455,11 @@ void *do_client(void *arg) {
 						pinv.mv_len = PINLEN;
 						cr = cacheGet(&pinv);
 						if (cr) {
-							ptr = strstr(ibuf+sizeof("ET /callback"), "code=");
+							ptr = strstr(ibuf+sizeof("ET /callback"), CODE "=");
 							if (ptr) {
 								myval code, grant = {AUTH_GRANT, sizeof(AUTH_GRANT)-1};
-								code.mv_val = ptr + sizeof("code");
+								myval toktype = {CODE, sizeof(CODE)-1};
+								code.mv_val = ptr + sizeof(CODE);
 								ptr = strchr(code.mv_val, '&');
 								if (!ptr)
 									ptr = strchr(code.mv_val, '\r');
@@ -465,7 +467,7 @@ void *do_client(void *arg) {
 									code.mv_len = ptr - code.mv_val;
 								else
 									code.mv_len = strlen(code.mv_val);
-								do_token(cp, cr, &grant, &code);
+								do_token(cp, cr, &grant, &toktype, &code);
 								my_clos(cp);
 								break;
 							}
@@ -497,7 +499,7 @@ out:
 			}
 			break;
 		case 'P':
-			if (!strncmp(ibuf+1, "OST /pin ", sizeof("OST /pin ")-1)) {
+			if (!strncmp(ibuf+1, "OST /pin ", sizeof("OST /pin"))) {
 				/* generate new pin */
 				unsigned char pinbuf[PINLEN+1], passbuf[129];
 				myval pinv = {pinbuf, sizeof(pinbuf)-1};
@@ -517,6 +519,24 @@ out:
 				cr = cacheSet(&pinv, &passv, &prov, &owner);
 				if (cr)
 					do_resp(cp, CODE_OK, "application/json", NULL, &cr->c_text);
+				my_clos(cp);
+			} else if (!strncmp(ibuf+1, "OST /refresh ", sizeof("OST /refresh"))) {
+#define REFRESH	"refresh_token"
+				myval prov, reftok, grant = {REFRESH, sizeof(REFRESH)-1};
+				prov.mv_val = strstr(ibuf, "provider=");
+				if (!prov.mv_val)
+					continue;
+				prov.mv_val += sizeof("provider");
+				ptr = strchr(prov.mv_val, '&');
+				if (!ptr)
+					continue;
+				prov.mv_len = ptr - prov.mv_val;
+				ptr++;
+				if (!strncmp(ptr, REFRESH "=", sizeof(REFRESH))) {
+					reftok.mv_val = ptr + sizeof(REFRESH);
+					reftok.mv_len = iptr - reftok.mv_val;
+					do_token(cp, NULL, &grant, &grant, &reftok);
+				}
 				my_clos(cp);
 			}
 			break;
@@ -582,9 +602,8 @@ void do_authz(client *cp, cacherec *cr)
 #define CLIENT_SECRET "client_secret="
 #define GRANT_TYPE "grant_type="
 #define REDIRECT "redirect_uri="
-#define CODE "code="
 
-void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
+void do_token(client *cp, cacherec *cr, myval *grant, myval *toktype, myval *token)
 {
 	struct addrinfo *ailist, *aip;
 	int i, fd, len, clen;
@@ -640,8 +659,9 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
 	}
 	len = sizeof(PREQ) + sizeof(HOSTH) + sizeof(ACCEPT) + sizeof(CTYPE) + sizeof(CTLEN) + 4;
 	clen = sizeof(CLIENT_ID) + sizeof(REDIRECT) + sizeof(CLIENT_SECRET) +
-		sizeof(GRANT_TYPE) + sizeof(CODE) - 1;
-	clen += clientId.mv_len + callbackUrl.mv_len + clientSecret.mv_len + grant->mv_len + code->mv_len;
+		sizeof(GRANT_TYPE);
+	clen += clientId.mv_len + callbackUrl.mv_len + clientSecret.mv_len + grant->mv_len +
+		toktype->mv_len + 1 + token->mv_len;
 	req.mv_val = malloc(len + clen);
 	ptr = strcopy(req.mv_val, PREQ);
 	ptr = strcopy(ptr, HOSTH);
@@ -661,8 +681,9 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
 	ptr = strcopy(ptr, GRANT_TYPE);
 	ptr = strcopy(ptr, grant->mv_val);
 	*ptr++ = '&';
-	ptr = strcopy(ptr, CODE);
-	ptr = strncopy(ptr, code->mv_val, code->mv_len);
+	ptr = strcopy(ptr, toktype->mv_val);
+	*ptr++ = '=';
+	ptr = strncopy(ptr, token->mv_val, token->mv_len);
 	req.mv_len = ptr - req.mv_val;
 	len = SSL_write(ssl, req.mv_val, req.mv_len);
 	free(req.mv_val);
@@ -691,13 +712,17 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
 	}
 	req.mv_val = str;
 	req.mv_len = clen;
-	cachePutToken(cr, &req);
-	req.mv_val = ibuf;
-	ptr = strcopy(req.mv_val, "Location: ");
-	ptr = strcopy(ptr, successUrl.mv_val);
-	*ptr++ = '\r'; *ptr++ = '\n';
-	req.mv_len = ptr - req.mv_val;
-	resp.mv_val = "";
-	resp.mv_len = 0;
-	do_resp(cp, CODE_TMPREDIR, "text/plain", &req, &resp);
+	if (cr) {
+		cachePutToken(cr, &req);
+		req.mv_val = ibuf;
+		ptr = strcopy(req.mv_val, "Location: ");
+		ptr = strcopy(ptr, successUrl.mv_val);
+		*ptr++ = '\r'; *ptr++ = '\n';
+		req.mv_len = ptr - req.mv_val;
+		resp.mv_val = "";
+		resp.mv_len = 0;
+		do_resp(cp, CODE_TMPREDIR, "text/plain", &req, &resp);
+	} else {
+		do_resp(cp, CODE_OK, "application/json", NULL, &req);
+	}
 }
