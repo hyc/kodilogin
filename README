@@ -24,11 +24,12 @@ Then run with
   ./kodilogin -h localhost
 
 It listens on port 3000 by default, so you'll need to enable
-  http://localhost:3000
-as the redirect URI for this google client.
+  http://localhost:3000/callback
+as the redirect URI for this Google client. Also you'll have to configure
+the GoogleDrive plugin to use http://localhost:3000 as its server.
 
 If you want to run it on a public address, Google will require you to have
-a valid DNS name, it will require https. So you're going to need to get 
+a valid DNS name, and it will require https. So you're going to need to get 
 your own server certificate and key. Once you have those, you can set them
 using -C to set the CA certificate file, -c for the server certificate file,
 -k for the server private key file.
@@ -39,3 +40,5 @@ it will listen on all available network interfaces.
 So you might invoke as
   ./kodilogin -h www.example.com -p 8000 -C cacert.pem -c servercert.pem -k serverkey.pem
 
+which would correspond to a server URL of https://www.example.com:8000 and
+use https://wwww.example.com:8000/callback as its redirect URI.
