@@ -315,12 +315,12 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 	ptr = pbuf;
 	ptr += sprintf(ptr, "HTTP/1.1 %s\r\n", code);
 	ptr += sprintf(ptr, "Content-Type: %s\r\n", mtype);
-	ptr += sprintf(ptr, "Content-Length: %d\r\n", len);
+	ptr += sprintf(ptr, "Content-Length: %d\r\n", (int)text->mv_len);
 	if (headers)
-		ptr = strcopy(ptr, headers->mv_val);
+		ptr = strncopy(ptr, headers->mv_val, headers->mv_len);
 	*ptr++ = '\r'; *ptr++ = '\n';
 	memcpy(ptr, text->mv_val, text->mv_len);
-	ptr += len;
+	ptr += text->mv_len;
 	len = ptr - pbuf;
 	my_send(cp, pbuf, len);
 	if (pbuf != buf)
@@ -332,7 +332,7 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *code);
 
 void *do_client(void *arg) {
 	client *cp = arg;
-	unsigned char ibuf[32768], *ptr;
+	unsigned char ibuf[32768], *ptr, *iptr, *iend;
 	int num;
 	myval resp;
 
@@ -346,11 +346,14 @@ void *do_client(void *arg) {
 	inet_ntop(AF_INET, &cp->c_addr, cp->c_addrstr, INET_ADDRSTRLEN);
 	cp->c_addrstrlen = strlen(cp->c_addrstr);
 
+	iend = ibuf+sizeof(ibuf);
+	iptr = ibuf;
 	for(;;) {
-		num = my_recv(cp, ibuf, sizeof(ibuf));
+		num = my_recv(cp, iptr, iend-iptr);
 		if (num <= 0)
 			break;
-		ibuf[num] = '\0';
+		iptr += num;
+		*iptr = '\0';
 		switch(ibuf[0]) {
 		case 'G':
 			if (!strncmp(ibuf+1, "ET /ip ", sizeof("ET /ip ")-1)) {
@@ -506,7 +509,7 @@ out:
 
 				prov.mv_val = strstr(ibuf, "provider=");
 				if (!prov.mv_val)
-					break;
+					continue;
 				prov.mv_val += sizeof("provider");
 				prov.mv_len = strlen(prov.mv_val);
 				generatePin(&pinv);
