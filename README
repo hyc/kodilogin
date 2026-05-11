@@ -1,0 +1,41 @@
+This is a simple implementation of the login server needed by the
+Google Drive KODI Addon at https://github.com/cguZZman/plugin.googledrive
+
+I wrote this because I couldn't get his official server code to compile
+(from here https://github.com/cguZZman/drive-login ).
+
+This other one works, but it uses some older javascript libraries and
+I didn't want to have to rely on something that's always going out of
+date (https://github.com/aldacco/drive-login/ ).
+
+This server's only dependency is OpenSSL. If you've got a C compiler
+installed you can build it just by typing "make".
+
+To run it you'll first need to setup your Google OAuth 2.0 credentials,
+just like for those other servers. Follow the setup instructions on the
+aldacco repo.
+
+After you obtain the credentials, set them in two environment variables
+
+  export GOOGLE_CLIENT_ID=..client id..
+  export GOOGLE_CLIENT_SECRET=..client secret..
+
+Then run with
+  ./kodilogin -h localhost
+
+It listens on port 3000 by default, so you'll need to enable
+  http://localhost:3000
+as the redirect URI for this google client.
+
+If you want to run it on a public address, Google will require you to have
+a valid DNS name, it will require https. So you're going to need to get 
+your own server certificate and key. Once you have those, you can set them
+using -C to set the CA certificate file, -c for the server certificate file,
+-k for the server private key file.
+
+If you want to bind the listener to a specific address use -a, otherwise
+it will listen on all available network interfaces.
+
+So you might invoke as
+  ./kodilogin -h www.example.com -p 8000 -C cacert.pem -c servercert.pem -k serverkey.pem
+
