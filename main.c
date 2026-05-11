@@ -669,7 +669,7 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
 
 	ptr = ibuf;
 	end = ibuf+sizeof(ibuf);
-	do {
+	for (;;) {
 		len = SSL_read(ssl, ptr, end-ptr);
 		if (len <= 0)
 			break;
@@ -686,9 +686,9 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
 			continue;
 		str++;
 		end = str+clen;
-		if (ptr-str < clen)
-			continue;
-	} while(0);
+		if (ptr-str >= clen)
+			break;
+	}
 	req.mv_val = str;
 	req.mv_len = clen;
 	cachePutToken(cr, &req);
