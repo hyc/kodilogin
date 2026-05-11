@@ -1,8 +1,19 @@
-/* Copyright (C) 2026 by Howard Chu.
+/* kodilogin: OAUTH2 helper for Google Drive addon for Kodi.
+ * Copyright (C) 2026 by Howard Chu.
  * http://www.highlandsun.com/hyc/
  *
- * You may distribute this program under the terms of the
- * GNU General Public License version 2.
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -414,7 +425,8 @@ void *do_client(void *arg) {
 #define MAINPAGE "<html><head><title>Authenticate Your Kodi</title></head>\n"\
 "<body><h1>Authenticate Your Kodi</h1><form action=\"/authorize\">\n"\
 "Code: <input name=\"pin\" type=\"text\"><p><input type=\"submit\" value=\"Send\">\n"\
-"</form></body></html>\n"
+"</form><p><p>This program's source code is at\n"\
+"<a href=\"https://github.com/hyc/kodilogin\">https://github.com/hyc/kodilogin</a></body></html>\n"
 				resp.mv_val = MAINPAGE;
 				resp.mv_len = sizeof(MAINPAGE)-1;
 				do_resp(cp, CODE_OK, "text/html", NULL, &resp);
