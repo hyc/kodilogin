@@ -1,6 +1,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include "utils.h"
 
@@ -92,7 +93,8 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 	ptr = strncopy(ptr, owner->mv_val, owner->mv_len);
 	ptr = strcopy(ptr, "\"}");
 	cr->c_text.mv_len = ptr - cr->c_text.mv_val;
-	cr->c_tokeninfo = NULL;
+	cr->c_token.mv_val = NULL;
+	cr->c_token.mv_len = 0;
 
 	pthread_mutex_lock(&cache_mutex);
 	cr->c_next = cacheHead;
@@ -112,6 +114,35 @@ cacherec *cacheGet(myval *pin)
 	}
 	pthread_mutex_unlock(&cache_mutex);
 	return cr;
+}
+
+int cachePutToken(cacherec *cr, myval *token)
+{
+	char *ptr = malloc(token->mv_len+1);
+	if (!ptr)
+		return errno;
+
+	memcpy(ptr, token->mv_val, token->mv_len);
+	ptr[token->mv_len] = '\0';
+	pthread_mutex_lock(&cache_mutex);
+	cr->c_token.mv_val = ptr;
+	cr->c_token.mv_len = token->mv_len;
+	pthread_mutex_unlock(&cache_mutex);
+	return 0;
+}
+
+void cacheDel(cacherec *cr)
+{
+	cacherec **ptr;
+
+	for (ptr = &cacheHead; *ptr; ptr = &((*ptr)->c_next)) {
+		if (*ptr == cr) {
+			*ptr = cr->c_next;
+			free(cr->c_token.mv_val);
+			free(cr);
+			break;
+		}
+	}
 }
 
 #define RIGHT2			0x03

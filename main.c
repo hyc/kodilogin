@@ -42,6 +42,7 @@ char *CAcertfile;
 char *certfile;
 char *keyfile;
 SSL_CTX *myctx;
+SSL_CTX *outctx;
 
 typedef struct client {
 	SSL *c_ssl;
@@ -54,12 +55,18 @@ typedef struct client {
 #define CODE_OK	"200 OK"
 #define CODE_ACCEPTED "202 Accepted"
 #define CODE_FOUND "302 Found"
+#define CODE_TMPREDIR "307 Temporary Redirect"
+#define CODE_BAD_REQUEST "400 Bad Request"
 #define CODE_UNAUTHORIZED "401 Unauthorized"
 #define CODE_NOT_FOUND "404 Not Found"
+#define CODE_INTERNAL "500 Internal Server Error"
+#define CODE_UNAVAILABLE "503 Service Unavailable"
 
 char *myname;
 struct in_addr myaddr;
+myval baseUrl;
 myval callbackUrl;
+myval successUrl;
 myval clientId, clientSecret;
 
 static void usage(char *prog)
@@ -168,13 +175,16 @@ int main( int argc, char *argv[] )
 	}
 	clientSecret.mv_len = strlen(clientSecret.mv_val);
 
+	OPENSSL_init_ssl(0, NULL);
+	outctx = SSL_CTX_new(TLS_method());
+	SSL_CTX_set_default_verify_paths(outctx);
+
 	i = ((CAcertfile != NULL) << 2) | ((certfile != NULL) << 1) | (keyfile != NULL);
 	if (i) {
 		if (i != 7) {
 			fprintf(stderr, "Invalid or incomplete TLS options\n");
 			exit(1);
 		}
-		OPENSSL_init_ssl(0, NULL);
 		myctx = SSL_CTX_new(TLS_method());
 		if (!SSL_CTX_load_verify_locations(myctx, CAcertfile, NULL)) {
 			fprintf(stderr, "Failed to set CAcertfile\n");
@@ -225,14 +235,36 @@ int main( int argc, char *argv[] )
 		freeaddrinfo(aip);
 	}
 
-	i = sizeof("http://:xxxxx/callback") + strlen(myname);
+	i = sizeof("http://:xxxxx/") + strlen(myname);
 	if (myctx) i++;
-	callbackUrl.mv_val = malloc(i+1);
+	baseUrl.mv_val = malloc(i+1);
+	if (!baseUrl.mv_val) {
+		perror("malloc");
+		exit(1);
+	}
+	baseUrl.mv_len = sprintf(baseUrl.mv_val, "http%s://%s:%d/", myctx ? "s" : "", myname, port);
+
+	callbackUrl.mv_val = malloc(baseUrl.mv_len + sizeof("callback"));
 	if (!callbackUrl.mv_val) {
 		perror("malloc");
 		exit(1);
 	}
-	callbackUrl.mv_len = sprintf(callbackUrl.mv_val, "http%s://%s:%d/callback", myctx ? "s" : "", myname, port);
+	{
+		unsigned char *ptr = strcopy(callbackUrl.mv_val, baseUrl.mv_val);
+		ptr = strcopy(ptr, "callback");
+		callbackUrl.mv_len = ptr - callbackUrl.mv_val;
+	}
+
+	successUrl.mv_val = malloc(baseUrl.mv_len + sizeof("success"));
+	if (!successUrl.mv_val) {
+		perror("malloc");
+		exit(1);
+	}
+	{
+		unsigned char *ptr = strcopy(successUrl.mv_val, baseUrl.mv_val);
+		ptr = strcopy(ptr, "success");
+		successUrl.mv_len = ptr - successUrl.mv_val;
+	}
 
 	if ((tcp = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
 		sock_err("tcp socket");
@@ -296,6 +328,7 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 }
 
 void do_authz(client *cp, cacherec *cr);
+void do_token(client *cp, cacherec *cr, myval *grant, myval *code);
 
 void *do_client(void *arg) {
 	client *cp = arg;
@@ -352,12 +385,13 @@ void *do_client(void *arg) {
 											pass.mv_len = cred.mv_len - (pass.mv_val - cred.mv_val);
 											if (pass.mv_len == cr->c_pass.mv_len &&
 												!strncmp(pass.mv_val, cr->c_pass.mv_val, pass.mv_len)) {
-												if (!cr->c_tokeninfo) {
+												if (!cr->c_token.mv_val) {
 													resp.mv_val = "";
 													resp.mv_len = 0;
-													do_resp(cp, CODE_ACCEPTED, "text/json", NULL, &resp);
+													do_resp(cp, CODE_ACCEPTED, "application/json", NULL, &resp);
 												} else {
-													do_resp(cp, CODE_OK, "text/json", NULL, &cr->c_tokeninfo->t_text);
+													do_resp(cp, CODE_OK, "application/json", NULL, &cr->c_token);
+													cacheDel(cr);
 												}
 												my_clos(cp);
 												break;
@@ -383,7 +417,7 @@ void *do_client(void *arg) {
 				do_resp(cp, CODE_OK, "text/html", NULL, &resp);
 				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /authorize?", sizeof("ET /authorize"))) {
-				ptr = ibuf+sizeof("ET /authorize");
+				ptr = ibuf+sizeof("ET /authorize?pin=");
 				if (ptr[PINLEN] == ' ') {
 					cacherec *cr;
 					myval pinv;
@@ -400,6 +434,62 @@ void *do_client(void *arg) {
 				resp.mv_val = "Invalid PIN";
 				resp.mv_len = sizeof("Invalid PIN")-1;
 				do_resp(cp, CODE_UNAUTHORIZED, "text/plain", NULL, &resp);
+				my_clos(cp);
+			} else if (!strncmp(ibuf+1, "ET /callback?", sizeof("ET /callback"))) {
+#define INVALID_REQUEST "Invalid request"
+#define INVALID_PIN "Your PIN is no longer valid. Please try again."
+#define COULDNT_AUTH "Unable to get authorization from provider. Your account doesn't have a valid drive resource."
+#define AUTH_GRANT	"authorization_code"
+				myval resp;
+				ptr = ibuf + sizeof("ET /callback");
+				ptr = strstr(ptr, "state=");
+				if (ptr) {
+					myval pinv;
+					pinv.mv_val = ptr + sizeof("state");
+					if (pinv.mv_val[PINLEN] == '&') {
+						cacherec *cr;
+						pinv.mv_len = PINLEN;
+						cr = cacheGet(&pinv);
+						if (cr) {
+							ptr = strstr(ibuf+sizeof("ET /callback"), "code=");
+							if (ptr) {
+								myval code, grant = {AUTH_GRANT, sizeof(AUTH_GRANT)-1};
+								code.mv_val = ptr + sizeof("code");
+								ptr = strchr(code.mv_val, '&');
+								if (!ptr)
+									ptr = strchr(code.mv_val, '\r');
+								if (ptr)
+									code.mv_len = ptr - code.mv_val;
+								else
+									code.mv_len = strlen(code.mv_val);
+								do_token(cp, cr, &grant, &code);
+								my_clos(cp);
+								break;
+							}
+						}
+					}
+					resp.mv_val = INVALID_PIN;
+					resp.mv_len = sizeof(INVALID_PIN)-1;
+					goto out;
+				}
+				resp.mv_val = INVALID_REQUEST;
+				resp.mv_len = sizeof(INVALID_REQUEST)-1;
+out:
+				do_resp(cp, CODE_BAD_REQUEST, "text/plain", NULL, &resp);
+				my_clos(cp);
+			} else if (!strncmp(ibuf+1, "ET /success ", sizeof("ET /success"))) {
+#define SUCCESSPAGE "<html><head><title>Authentication Completed</title></head>\n"\
+"<body><h1>Authentication Completed</h1>Your authentication has been successful.<p>\n"\
+"Now Kodi will complete your login.<p>\n"\
+"<a href=\"/\">Home</a></body></html>\n"
+				resp.mv_val = SUCCESSPAGE;
+				resp.mv_len = sizeof(SUCCESSPAGE)-1;
+				do_resp(cp, CODE_OK, "text/html", NULL, &resp);
+				my_clos(cp);
+			} else {
+				resp.mv_val = "";
+				resp.mv_len = 0;
+				do_resp(cp, CODE_NOT_FOUND, "text/plain", NULL, &resp);
 				my_clos(cp);
 			}
 			break;
@@ -423,7 +513,7 @@ void *do_client(void *arg) {
 				generatePassword(&passv);
 				cr = cacheSet(&pinv, &passv, &prov, &owner);
 				if (cr)
-					do_resp(cp, CODE_OK, "text/json", NULL, &cr->c_text);
+					do_resp(cp, CODE_OK, "application/json", NULL, &cr->c_text);
 				my_clos(cp);
 			}
 			break;
@@ -433,7 +523,7 @@ void *do_client(void *arg) {
 	return NULL;
 }
 
-#define AUTHZ_URL "https://accounts.google.com/o/oauth2/v2/auth?"
+#define AUTHZ_URL "Location: https://accounts.google.com/o/oauth2/v2/auth?"
 #define CLIENT_ID "client_id="
 #define REDIRECT_URI "redirect_uri="
 #define STATE "state="
@@ -447,7 +537,7 @@ void do_authz(client *cp, cacherec *cr)
 	myval header, resp;
 	int len = sizeof(AUTHZ_URL) + sizeof(CLIENT_ID) + sizeof(REDIRECT_URI) +
 		sizeof(STATE) + sizeof(RESPONSE_TYPE) + sizeof(SCOPE) +
-		sizeof(ACCESS_TYPE) + sizeof(PROMPT) + PINLEN;
+		sizeof(ACCESS_TYPE) + sizeof(PROMPT) + PINLEN + 2;
 	len += clientId.mv_len + callbackUrl.mv_len;
 
 	header.mv_val = malloc(len);
@@ -470,10 +560,141 @@ void do_authz(client *cp, cacherec *cr)
 		ptr = strcopy(ptr, ACCESS_TYPE);
 		*ptr++ = '&';
 		ptr = strcopy(ptr, PROMPT);
+		*ptr++ = '\r'; *ptr++ = '\n';
 		header.mv_len = ptr - header.mv_val;
 		resp.mv_val = "";
 		resp.mv_len = 0;
 		do_resp(cp, CODE_FOUND, "text/plain", &header, &resp);
 		free(header.mv_val);
 	}
+}
+
+#define HNAME "oauth2.googleapis.com"
+#define PREQ "POST /token HTTP/1.1\r\n"
+#define HOSTH "Host: " HNAME "\r\n"
+#define ACCEPT "Accept: */*\r\n"
+#define CTYPE "Content-Type: application/x-www-form-urlencoded\r\n"
+#define CTLEN "Content-Length: %d\r\n"
+
+#define CLIENT_SECRET "client_secret="
+#define GRANT_TYPE "grant_type="
+#define REDIRECT "redirect_uri="
+#define CODE "code="
+
+void do_token(client *cp, cacherec *cr, myval *grant, myval *code)
+{
+	struct addrinfo *ailist, *aip;
+	int i, fd, len, clen;
+	SSL *ssl;
+	myval req, resp;
+	unsigned char *ptr, *end, *str;
+	unsigned char ibuf[16384];
+
+	if ((i=getaddrinfo(HNAME, "https", NULL, &ailist))) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(i));
+		resp.mv_val = "Couldn't resolve " HNAME "'s address";
+		resp.mv_len = sizeof("Couldn't resolve " HNAME "'s address") - 1;
+		do_resp(cp, CODE_UNAVAILABLE, "text/plain", NULL, &resp);
+		return;
+	}
+	for (aip = ailist; aip; aip=aip->ai_next) {
+		if ((fd = socket(aip->ai_family, SOCK_STREAM, 0)) < 0) {
+			sock_err("out socket");
+			exit(1);
+		}
+		if (connect(fd, aip->ai_addr, aip->ai_addrlen) >= 0)
+			break;
+
+		close(fd);
+		sock_err("out connect");
+	}
+	freeaddrinfo(ailist);
+	if (!aip) {
+		resp.mv_val = "Couldn't connect to " HNAME;
+		resp.mv_len = sizeof("Couldn't connect to " HNAME)-1;
+		do_resp(cp, CODE_UNAVAILABLE, "text/plain", NULL, &resp);
+		return;
+	}
+
+	ssl = SSL_new(outctx);
+	if (!ssl) {
+		close(fd);
+		resp.mv_val = "Couldn't allocate SSL session";
+		resp.mv_len = sizeof("Couldn't allocate SSL session")-1;
+		do_resp(cp, CODE_INTERNAL, "text/plain", NULL, &resp);
+		return;
+	} else
+	{
+		BIO *bio = BIO_new_socket(fd, 1);
+		SSL_set_bio(ssl, bio, bio);
+	}
+	if (SSL_connect(ssl) != 1) {
+		SSL_free(ssl);
+		resp.mv_val = "SSL handshake failed";
+		resp.mv_len = sizeof("SSL handshake failed")-1;
+		do_resp(cp, CODE_UNAVAILABLE, "text/plain", NULL, &resp);
+		return;
+	}
+	len = sizeof(PREQ) + sizeof(HOSTH) + sizeof(ACCEPT) + sizeof(CTYPE) + sizeof(CTLEN) + 4;
+	clen = sizeof(CLIENT_ID) + sizeof(REDIRECT) + sizeof(CLIENT_SECRET) +
+		sizeof(GRANT_TYPE) + sizeof(CODE) - 1;
+	clen += clientId.mv_len + callbackUrl.mv_len + clientSecret.mv_len + grant->mv_len + code->mv_len;
+	req.mv_val = malloc(len + clen);
+	ptr = strcopy(req.mv_val, PREQ);
+	ptr = strcopy(ptr, HOSTH);
+	ptr = strcopy(ptr, ACCEPT);
+	ptr = strcopy(ptr, CTYPE);
+	ptr += sprintf(ptr, CTLEN, clen);
+	*ptr++ = '\r'; *ptr++ = '\n';
+	ptr = strcopy(ptr, CLIENT_ID);
+	ptr = strcopy(ptr, clientId.mv_val);
+	*ptr++ = '&';
+	ptr = strcopy(ptr, REDIRECT);
+	ptr = strcopy(ptr, callbackUrl.mv_val);
+	*ptr++ = '&';
+	ptr = strcopy(ptr, CLIENT_SECRET);
+	ptr = strcopy(ptr, clientSecret.mv_val);
+	*ptr++ = '&';
+	ptr = strcopy(ptr, GRANT_TYPE);
+	ptr = strcopy(ptr, grant->mv_val);
+	*ptr++ = '&';
+	ptr = strcopy(ptr, CODE);
+	ptr = strncopy(ptr, code->mv_val, code->mv_len);
+	req.mv_len = ptr - req.mv_val;
+	len = SSL_write(ssl, req.mv_val, req.mv_len);
+	free(req.mv_val);
+
+	ptr = ibuf;
+	end = ibuf+sizeof(ibuf);
+	do {
+		len = SSL_read(ssl, ptr, end-ptr);
+		if (len <= 0)
+			break;
+		str = strstr(ibuf, "\r\n\r\n");
+		ptr += len;
+		if (!str || ptr-str < 7)
+			continue;
+		str += 4;
+		if (sscanf(str, "%x", &clen) != 1)
+			continue;
+		*ptr = '\0';
+		str = strchr(str, '\n');
+		if (!str)
+			continue;
+		str++;
+		end = str+clen;
+		if (ptr-str < clen)
+			continue;
+	} while(0);
+	req.mv_val = str;
+	req.mv_len = clen;
+	cachePutToken(cr, &req);
+	req.mv_val = ibuf;
+	ptr = strcopy(req.mv_val, "Location: ");
+	ptr = strcopy(ptr, successUrl.mv_val);
+	*ptr++ = '\r'; *ptr++ = '\n';
+	req.mv_len = ptr - req.mv_val;
+	resp.mv_val = "";
+	resp.mv_len = 0;
+	do_resp(cp, CODE_TMPREDIR, "text/plain", &req, &resp);
 }

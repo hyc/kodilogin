@@ -9,10 +9,6 @@ void generatePin(myval *mv);
 
 #define PINLEN	6
 
-typedef struct tokeninfo {
-	myval t_text;
-} tokeninfo;
-
 typedef struct cacherec {
 	struct cacherec *c_next;
 	myval c_pin;
@@ -20,7 +16,7 @@ typedef struct cacherec {
 	myval c_provider;
 	myval c_owner;
 	myval c_text;
-	tokeninfo *c_tokeninfo;
+	myval c_token;
 } cacherec;
 
 void cacheInit();
@@ -28,6 +24,10 @@ void cacheInit();
 cacherec *cacheSet(myval *pin, myval *pass, myval *provider, myval *owner);
 
 cacherec *cacheGet(myval *pin);
+
+int cachePutToken(cacherec *cr, myval *token);
+
+void cacheDel(cacherec *cr);
 
 int decode_b64_inplace(myval *val);
 
