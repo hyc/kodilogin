@@ -79,6 +79,8 @@ void cacheInit()
 	pthread_mutex_init(&cache_mutex, NULL);
 }
 
+#define EXPIRY	180	/* remove any records older than 3 minutes */
+
 cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 {
 	cacherec *cr;
@@ -120,14 +122,16 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 	pthread_mutex_lock(&cache_mutex);
 
 	{
-		/* purge old records after 3 minutes */
+		/* purge old records */
 		cacherec **ptr;
-		for (ptr = &cacheHead; *ptr; ptr = &((*ptr)->c_next)) {
-			if (cr->c_time - (*ptr)->c_time > 180) {
+		for (ptr = &cacheHead; *ptr; ) {
+			if (cr->c_time - (*ptr)->c_time > EXPIRY) {
 				cacherec *c2 = *ptr;
 				*ptr = c2->c_next;
 				free(c2->c_token.mv_val);
 				free(c2);
+			} else {
+				ptr = &((*ptr)->c_next);
 			}
 		}
 	}
