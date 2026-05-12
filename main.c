@@ -62,6 +62,7 @@ typedef struct client {
 	char c_addrbuf[INET_ADDRSTRLEN+1];
 	myval c_addrstr;
 	int c_fd;
+	unsigned char *c_input;
 } client;
 
 #define CODE_OK	"200 OK"
@@ -319,6 +320,28 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 	char buf[16384], *pbuf, *ptr;
 	int len = text->mv_len;
 
+	{
+		unsigned char *spc;
+		time_t now;
+		int cmdlen;
+
+		time(&now);
+		ctime_r(&now, buf);
+		buf[24] = '\0';
+		spc = strchr(cp->c_input, ' ');
+		if (spc) {
+			spc = strchr(spc+1, ' ');
+			cmdlen = spc - cp->c_input;
+		} else {
+			spc = strchr(cp->c_input, '\r');
+			if (spc)
+				cmdlen = spc - cp->c_input;
+			else
+				cmdlen = strlen(cp->c_input);
+		}
+		printf("%s %.*s %.3s\n", buf, cmdlen, cp->c_input, code);
+	}
+
 	if (headers)
 		len += headers->mv_len;
 	if (len+100 > sizeof(buf)) {
@@ -405,6 +428,7 @@ void *do_client(void *arg) {
 		}
 	}
 
+	cp->c_input = ibuf;
 	iend = ibuf+sizeof(ibuf);
 	iptr = ibuf;
 	for(;;) {
@@ -603,6 +627,10 @@ out:
 				my_clos(cp);
 			}
 			break;
+		default:
+			resp.mv_val = "Unrecognized input";
+			resp.mv_len = sizeof("Unrecognized input")-1;
+			do_resp(cp, CODE_BAD_REQUEST, "text/plain", NULL, &resp);
 		}
 	}
 
