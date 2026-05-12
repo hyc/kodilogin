@@ -113,6 +113,8 @@ static int my_ssl_clos(client *cp) {
 		while (SSL_read(cp->c_ssl, buf, sizeof(buf) >= 0))
 			;
 	}
+	SSL_free(cp->c_ssl);
+	cp->c_ssl = NULL;
 	return 0;
 }
 
@@ -453,7 +455,6 @@ void *do_client(void *arg) {
 				get_ip(cp, ibuf);
 				resp = cp->c_addrstr;
 				do_resp(cp, CODE_OK, "text/plain", NULL, &resp);
-				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /pin/", sizeof("ET /pin/")-1)) {
 				/* lookup existing pin */
 				myval pinv;
@@ -490,7 +491,6 @@ void *do_client(void *arg) {
 													do_resp(cp, CODE_OK, "application/json", NULL, &cr->c_token);
 													cacheDel(cr);
 												}
-												my_clos(cp);
 												break;
 											}
 										}
@@ -503,7 +503,6 @@ void *do_client(void *arg) {
 				resp.mv_val = "";
 				resp.mv_len = 0;
 				do_resp(cp, CODE_NOT_FOUND, "text/plain", NULL, &resp);
-				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET / ", sizeof("ET /"))) {
 #define MAINPAGE "<html><head><title>Authenticate Your Kodi</title></head>\n"\
 "<body><h1>Authenticate Your Kodi</h1><form action=\"/authorize\">\n"\
@@ -513,7 +512,6 @@ void *do_client(void *arg) {
 				resp.mv_val = MAINPAGE;
 				resp.mv_len = sizeof(MAINPAGE)-1;
 				do_resp(cp, CODE_OK, "text/html", NULL, &resp);
-				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /authorize?", sizeof("ET /authorize"))) {
 				ptr = ibuf+sizeof("ET /authorize?pin=");
 				if (ptr[PINLEN] == ' ') {
@@ -526,14 +524,12 @@ void *do_client(void *arg) {
 					if (cr && cr->c_owner.mv_len == cp->c_addrstr.mv_len &&
 						!strncmp(cp->c_addrstr.mv_val, cr->c_owner.mv_val, cr->c_owner.mv_len)) {
 						do_authz(cp, cr);
-						my_clos(cp);
 						break;
 					}
 				}
 				resp.mv_val = "Invalid PIN";
 				resp.mv_len = sizeof("Invalid PIN")-1;
 				do_resp(cp, CODE_UNAUTHORIZED, "text/plain", NULL, &resp);
-				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /callback?", sizeof("ET /callback"))) {
 #define INVALID_REQUEST "Invalid request"
 #define INVALID_PIN "Your PIN is no longer valid. Please try again."
@@ -564,7 +560,6 @@ void *do_client(void *arg) {
 								else
 									code.mv_len = strlen(code.mv_val);
 								do_token(cp, cr, &grant, &toktype, &code);
-								my_clos(cp);
 								break;
 							}
 						}
@@ -577,7 +572,6 @@ void *do_client(void *arg) {
 				resp.mv_len = sizeof(INVALID_REQUEST)-1;
 out:
 				do_resp(cp, CODE_BAD_REQUEST, "text/plain", NULL, &resp);
-				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /success ", sizeof("ET /success"))) {
 #define SUCCESSPAGE "<html><head><title>Authentication Completed</title></head>\n"\
 "<body><h1>Authentication Completed</h1>Your authentication has been successful.<p>\n"\
@@ -586,12 +580,10 @@ out:
 				resp.mv_val = SUCCESSPAGE;
 				resp.mv_len = sizeof(SUCCESSPAGE)-1;
 				do_resp(cp, CODE_OK, "text/html", NULL, &resp);
-				my_clos(cp);
 			} else {
 				resp.mv_val = "";
 				resp.mv_len = 0;
 				do_resp(cp, CODE_NOT_FOUND, "text/plain", NULL, &resp);
-				my_clos(cp);
 			}
 			break;
 		case 'P':
@@ -616,7 +608,6 @@ out:
 				cr = cacheSet(&pinv, &passv, &prov, &owner);
 				if (cr)
 					do_resp(cp, CODE_OK, "application/json", NULL, &cr->c_text);
-				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "OST /refresh ", sizeof("OST /refresh"))) {
 #define REFRESH	"refresh_token"
 				myval prov, reftok, grant = {REFRESH, sizeof(REFRESH)-1};
@@ -634,7 +625,6 @@ out:
 					reftok.mv_len = iptr - reftok.mv_val;
 					do_token(cp, NULL, &grant, &grant, &reftok);
 				}
-				my_clos(cp);
 			}
 			break;
 		default:
@@ -642,6 +632,8 @@ out:
 			resp.mv_len = sizeof("Unrecognized input")-1;
 			do_resp(cp, CODE_BAD_REQUEST, "text/plain", NULL, &resp);
 		}
+		my_clos(cp);
+		break;
 	}
 
 finish:
