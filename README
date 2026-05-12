@@ -42,3 +42,29 @@ So you might invoke as
 
 which would correspond to a server URL of https://www.example.com:8000 and
 use https://wwww.example.com:8000/callback as its redirect URI.
+
+-----
+
+I've also added a little helper program called ltunnel. It forwards a port
+from the local machine to a port on a remote machine, in cleartext. (I.e.
+it's not encrypted at all, like stunnel would be.) It's useful to access a
+kodilogin server running on your network, from a box that can't run its own
+web browser, such as a CoreElec install.
+
+Since your CoreElec box can't run a web browser, it's no use to run kodilogin
+on that box as a localhost server because you can't complete the Google
+login process without a web browser. So as a workaround, you can run the
+kodilogin as a localhost server on some other PC on your home network -
+one that also has a working web browser. Then you run ltunnel on the
+CoreElec box, pointing to the PC. Then any connection to localhost:3000
+on the CoreElec box actually talks to localhost:3000 on the PC.
+
+Of course, you will need to compile ltunnel for ARM Linux in order to
+get a binary that works on the CoreElec box. Then you can enable the
+CoreElec SSH server to copy the binary over and run it there.
+
+Assuming your PC was running at IP address 192.168.1.100 with the default
+port 3000, you just run on the CoreElec box `ltunnel -h 192.168.1.100` and
+leave it running. Then with your Google Drive plugin configured to talk to
+http://localhost:3000 it will be using your PC's kodilogin server to
+authenticate.
