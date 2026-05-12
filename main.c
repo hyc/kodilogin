@@ -351,11 +351,13 @@ void get_ip(client *cp, unsigned char *ibuf) {
 		while (!isdigit(*ptr)) ptr++;
 
 		crnl = strchr(ptr, '\r');
-		comma = memchr(ptr, ',', crnl-ptr);
-		if (comma) crnl = comma;
-		cp->c_addrstr.mv_len = crnl - ptr;
-		strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
-		return;
+		if (crnl) {
+			comma = memchr(ptr, ',', crnl-ptr);
+			if (comma) crnl = comma;
+			cp->c_addrstr.mv_len = crnl - ptr;
+			strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
+			return;
+		}
 	}
 	ptr = strstr(ibuf, "X-Real-IP:");
 	if (ptr) {
@@ -364,9 +366,11 @@ void get_ip(client *cp, unsigned char *ibuf) {
 		while (!isdigit(*ptr)) ptr++;
 
 		crnl = strchr(ptr, '\r');
-		cp->c_addrstr.mv_len = crnl - ptr;
-		strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
-		return;
+		if (crnl) {
+			cp->c_addrstr.mv_len = crnl - ptr;
+			strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
+			return;
+		}
 	}
 	ptr = strstr(ibuf, "Forwarded: for=");
 	if (ptr) {
@@ -374,9 +378,11 @@ void get_ip(client *cp, unsigned char *ibuf) {
 		ptr += sizeof("Forwarded: for");
 
 		crnl = strchr(ptr, '\r');
-		cp->c_addrstr.mv_len = crnl - ptr;
-		strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
-		return;
+		if (crnl) {
+			cp->c_addrstr.mv_len = crnl - ptr;
+			strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
+			return;
+		}
 	}
 	inet_ntop(AF_INET, &cp->c_addr, cp->c_addrstr.mv_val, INET_ADDRSTRLEN);
 	cp->c_addrstr.mv_len = strlen(cp->c_addrstr.mv_val);
