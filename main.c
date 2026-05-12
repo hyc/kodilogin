@@ -51,7 +51,6 @@ unsigned char buf[BUFSIZ];
 char namebuf[256];
 int my_max_thr = DEFTHREADS;
 
-char *CAcertfile;
 char *certfile;
 char *keyfile;
 SSL_CTX *myctx;
@@ -88,7 +87,7 @@ int verbose;
 static void usage(char *prog)
 {
 	fprintf(stderr,
-		"usage: %s [-a address] [-h hostFQDN] [-p port] [-C CAcertfile] [-c certfile] [-k keyfile] [-t threads] [-v]\n", prog);
+		"usage: %s [-a address] [-h hostFQDN] [-p port] [-c certfile] [-k keyfile] [-t threads] [-v]\n", prog);
 	exit(EXIT_FAILURE);
 }
 
@@ -140,14 +139,13 @@ int main( int argc, char *argv[] )
 	/* -a: specific address to bind to, otherwise INADDR_ANY
 	 * -h: FQDN to use in URLs
 	 * -p: port number to bind to
-	 * -C: CA cert file
 	 * -c: server cert file
 	 * -k: server key file
 	 * -t: max threads to use
 	 * -v: verbose - print a message for each request
 	 */
 
-	while ((i = getopt(argc, argv, "a:c:h:k:p:t:C:v")) != EOF) {
+	while ((i = getopt(argc, argv, "a:c:h:k:p:t:v")) != EOF) {
 		switch(i) {
 		case 'a':
 			if (!inet_aton(optarg, &myaddr)) {
@@ -166,9 +164,6 @@ int main( int argc, char *argv[] )
 			break;
 		case 'k':
 			keyfile = optarg;
-			break;
-		case 'C':
-			CAcertfile = optarg;
 			break;
 		case 't':
 			my_max_thr = atoi(optarg);
@@ -199,17 +194,14 @@ int main( int argc, char *argv[] )
 	outctx = SSL_CTX_new(TLS_method());
 	SSL_CTX_set_default_verify_paths(outctx);
 
-	i = ((CAcertfile != NULL) << 2) | ((certfile != NULL) << 1) | (keyfile != NULL);
+	i = ((certfile != NULL) << 1) | (keyfile != NULL);
 	if (i) {
-		if (i != 7) {
+		if (i != 3) {
 			fprintf(stderr, "Invalid or incomplete TLS options\n");
 			exit(1);
 		}
 		myctx = SSL_CTX_new(TLS_method());
-		if (!SSL_CTX_load_verify_locations(myctx, CAcertfile, NULL)) {
-			fprintf(stderr, "Failed to set CAcertfile\n");
-			exit(1);
-		}
+		SSL_CTX_set_default_verify_paths(myctx);
 		if (!SSL_CTX_use_certificate_chain_file(myctx, certfile)) {
 			fprintf(stderr, "Failed to set certfile\n");
 			exit(1);
@@ -285,6 +277,8 @@ int main( int argc, char *argv[] )
 		ptr = strcopy(ptr, "success");
 		successUrl.mv_len = ptr - successUrl.mv_val;
 	}
+
+	printf("Callback URL is %s\n", callbackUrl.mv_val);
 
 	if ((tcp = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
 		sock_err("tcp socket");
