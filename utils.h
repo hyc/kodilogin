@@ -15,6 +15,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <time.h>
+
 typedef struct myval {
 	unsigned char *mv_val;
 	size_t mv_len;
@@ -28,6 +30,7 @@ void generatePin(myval *mv);
 
 typedef struct cacherec {
 	struct cacherec *c_next;
+	time_t c_time;
 	myval c_pin;
 	myval c_pass;
 	myval c_provider;

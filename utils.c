@@ -94,6 +94,7 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 	if (!cr)
 		return NULL;
 
+	time(&cr->c_time);
 	cr->c_text.mv_val = (unsigned char *)(cr+1);
 	ptr = strcopy(cr->c_text.mv_val, "{\"pin\":\"");
 	cr->c_pin.mv_val = ptr;
@@ -117,6 +118,20 @@ cacherec *cacheSet(myval *pin, myval *pass, myval *prov, myval *owner)
 	cr->c_token.mv_len = 0;
 
 	pthread_mutex_lock(&cache_mutex);
+
+	{
+		/* purge old records after 3 minutes */
+		cacherec **ptr;
+		for (ptr = &cacheHead; *ptr; ptr = &((*ptr)->c_next)) {
+			if (cr->c_time - (*ptr)->c_time > 180) {
+				cacherec *c2 = *ptr;
+				*ptr = c2->c_next;
+				free(c2->c_token.mv_val);
+				free(c2);
+			}
+		}
+	}
+
 	cr->c_next = cacheHead;
 	cacheHead = cr;
 	pthread_mutex_unlock(&cache_mutex);
