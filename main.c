@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #ifdef _WIN32
 #include <winsock2.h>
 #define USE_WINSOCK
@@ -63,6 +64,7 @@ typedef struct client {
 	myval c_addrstr;
 	int c_fd;
 	unsigned char *c_input;
+	struct timeval c_start;
 } client;
 
 #define CODE_OK	"200 OK"
@@ -81,11 +83,12 @@ myval baseUrl;
 myval callbackUrl;
 myval successUrl;
 myval clientId, clientSecret;
+int verbose;
 
 static void usage(char *prog)
 {
 	fprintf(stderr,
-		"usage: %s [-a address] [-h hostFQDN] [-p port] [-C CAcertfile] [-c certfile] [-k keyfile] [-t threads]\n", prog);
+		"usage: %s [-a address] [-h hostFQDN] [-p port] [-C CAcertfile] [-c certfile] [-k keyfile] [-t threads] [-v]\n", prog);
 	exit(EXIT_FAILURE);
 }
 
@@ -141,9 +144,10 @@ int main( int argc, char *argv[] )
 	 * -c: server cert file
 	 * -k: server key file
 	 * -t: max threads to use
+	 * -v: verbose - print a message for each request
 	 */
 
-	while ((i = getopt(argc, argv, "a:c:h:k:p:t:C:")) != EOF) {
+	while ((i = getopt(argc, argv, "a:c:h:k:p:t:C:v")) != EOF) {
 		switch(i) {
 		case 'a':
 			if (!inet_aton(optarg, &myaddr)) {
@@ -168,6 +172,9 @@ int main( int argc, char *argv[] )
 			break;
 		case 't':
 			my_max_thr = atoi(optarg);
+			break;
+		case 'v':
+			verbose++;
 			break;
 		default:
 			usage(prog);
@@ -299,6 +306,8 @@ int main( int argc, char *argv[] )
 	salen = sizeof(sa2);
 	while((fd = accept(tcp, (struct sockaddr *)&sa2, &salen)) >= 0) {
 		client *cp = malloc(sizeof(client));
+		if (verbose)
+			gettimeofday(&cp->c_start, NULL);
 		cp->c_fd = fd;
 		cp->c_addr.s_addr = sa2.sin_addr.s_addr;
 		cp->c_addrstr.mv_val = cp->c_addrbuf;
@@ -320,13 +329,20 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 	char buf[16384], *pbuf, *ptr;
 	int len = text->mv_len;
 
-	{
+	if (verbose) {
 		unsigned char *spc;
-		time_t now;
+		struct timeval now;
 		int cmdlen;
 
-		time(&now);
-		ctime_r(&now, buf);
+		gettimeofday(&now, NULL);
+		ctime_r(&now.tv_sec, buf);
+		now.tv_usec -= cp->c_start.tv_usec;
+		if (now.tv_usec < 0) {
+			now.tv_usec += 1000000;
+			now.tv_sec--;
+		}
+		now.tv_sec -= cp->c_start.tv_sec;
+
 		buf[24] = '\0';
 		spc = strchr(cp->c_input, ' ');
 		if (spc) {
@@ -339,7 +355,7 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 			else
 				cmdlen = strlen(cp->c_input);
 		}
-		printf("%s %.*s %.3s\n", buf, cmdlen, cp->c_input, code);
+		printf("%s %.*s %.3s in %d.%06dsec\n", buf, cmdlen, cp->c_input, code, (int)now.tv_sec, (int)now.tv_usec);
 	}
 
 	if (headers)
