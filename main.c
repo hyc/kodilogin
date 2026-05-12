@@ -32,6 +32,7 @@
 #define	sock_err(msg)	perror(msg)
 #endif
 #include <string.h>
+#include <ctype.h>
 
 #include <openssl/ssl.h>
 #include <openssl/rand.h>
@@ -58,8 +59,8 @@ SSL_CTX *outctx;
 typedef struct client {
 	SSL *c_ssl;
 	struct in_addr c_addr;
-	char c_addrstr[INET_ADDRSTRLEN+1];
-	int c_addrstrlen;
+	char c_addrbuf[INET_ADDRSTRLEN+1];
+	myval c_addrstr;
 	int c_fd;
 } client;
 
@@ -299,6 +300,8 @@ int main( int argc, char *argv[] )
 		client *cp = malloc(sizeof(client));
 		cp->c_fd = fd;
 		cp->c_addr.s_addr = sa2.sin_addr.s_addr;
+		cp->c_addrstr.mv_val = cp->c_addrbuf;
+		cp->c_addrstr.mv_len = 0;
 		if (myctx) {
 			SSL *ssl = SSL_new(myctx);
 			BIO *bio = BIO_new_socket(fd, 1);
@@ -338,6 +341,48 @@ void do_resp(client *cp, char *code, char *mtype, myval *headers, myval *text)
 		free(pbuf);
 }
 
+void get_ip(client *cp, unsigned char *ibuf) {
+	unsigned char *ptr;
+
+	ptr = strstr(ibuf, "X-Forwarded-For:");
+	if (ptr) {
+		unsigned char *crnl, *comma;
+		ptr += sizeof("X-Forwarded-For:");
+		while (!isdigit(*ptr)) ptr++;
+
+		crnl = strchr(ptr, '\r');
+		comma = memchr(ptr, ',', crnl-ptr);
+		if (comma) crnl = comma;
+		cp->c_addrstr.mv_len = crnl - ptr;
+		strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
+		return;
+	}
+	ptr = strstr(ibuf, "X-Real-IP:");
+	if (ptr) {
+		unsigned char *crnl;
+		ptr += sizeof("X-Real-IP:");
+		while (!isdigit(*ptr)) ptr++;
+
+		crnl = strchr(ptr, '\r');
+		cp->c_addrstr.mv_len = crnl - ptr;
+		strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
+		return;
+	}
+	ptr = strstr(ibuf, "Forwarded: for=");
+	if (ptr) {
+		unsigned char *crnl;
+		ptr += sizeof("Forwarded: for");
+
+		crnl = strchr(ptr, '\r');
+		cp->c_addrstr.mv_len = crnl - ptr;
+		strncopy(cp->c_addrstr.mv_val, ptr, cp->c_addrstr.mv_len);
+		return;
+	}
+	inet_ntop(AF_INET, &cp->c_addr, cp->c_addrstr.mv_val, INET_ADDRSTRLEN);
+	cp->c_addrstr.mv_len = strlen(cp->c_addrstr.mv_val);
+	return;
+}
+
 void do_authz(client *cp, cacherec *cr);
 void do_token(client *cp, cacherec *cr, myval *grant, myval *toktype, myval *token);
 
@@ -350,12 +395,9 @@ void *do_client(void *arg) {
 	if (cp->c_ssl) {
 		if (!SSL_accept(cp->c_ssl)) {
 			fprintf(stderr, "SSL_accept failed\n");
-			return NULL;
+			goto finish;
 		}
 	}
-
-	inet_ntop(AF_INET, &cp->c_addr, cp->c_addrstr, INET_ADDRSTRLEN);
-	cp->c_addrstrlen = strlen(cp->c_addrstr);
 
 	iend = ibuf+sizeof(ibuf);
 	iptr = ibuf;
@@ -368,8 +410,8 @@ void *do_client(void *arg) {
 		switch(ibuf[0]) {
 		case 'G':
 			if (!strncmp(ibuf+1, "ET /ip ", sizeof("ET /ip ")-1)) {
-				resp.mv_val = cp->c_addrstr;
-				resp.mv_len = cp->c_addrstrlen;
+				get_ip(cp, ibuf);
+				resp = cp->c_addrstr;
 				do_resp(cp, CODE_OK, "text/plain", NULL, &resp);
 				my_clos(cp);
 			} else if (!strncmp(ibuf+1, "ET /pin/", sizeof("ET /pin/")-1)) {
@@ -381,9 +423,10 @@ void *do_client(void *arg) {
 					pinv.mv_len = PINLEN;
 					cr = cacheGet(&pinv);
 					if (cr) {
+						get_ip(cp, ibuf);
 						ptr = strstr(pinv.mv_val + PINLEN, "Authorization");
-						if (ptr && cr->c_owner.mv_len == cp->c_addrstrlen &&
-							!strncmp(cr->c_owner.mv_val, cp->c_addrstr, cp->c_addrstrlen)) {
+						if (ptr && cr->c_owner.mv_len == cp->c_addrstr.mv_len &&
+							!strncmp(cr->c_owner.mv_val, cp->c_addrstr.mv_val, cp->c_addrstr.mv_len)) {
 							ptr += sizeof("Authorization:");
 							if (!strncasecmp(ptr, "Basic ", sizeof("Basic ")-1)) {
 								myval cred;
@@ -439,8 +482,9 @@ void *do_client(void *arg) {
 					pinv.mv_val = ptr;
 					pinv.mv_len = PINLEN;
 					cr = cacheGet(&pinv);
-					if (cr && cr->c_owner.mv_len == cp->c_addrstrlen &&
-						!strncmp(cp->c_addrstr, cr->c_owner.mv_val, cr->c_owner.mv_len)) {
+					get_ip(cp, ibuf);
+					if (cr && cr->c_owner.mv_len == cp->c_addrstr.mv_len &&
+						!strncmp(cp->c_addrstr.mv_val, cr->c_owner.mv_val, cr->c_owner.mv_len)) {
 						do_authz(cp, cr);
 						my_clos(cp);
 						break;
@@ -516,11 +560,12 @@ out:
 				unsigned char pinbuf[PINLEN+1], passbuf[129];
 				myval pinv = {pinbuf, sizeof(pinbuf)-1};
 				myval passv = {passbuf, sizeof(passbuf)-1};
-				myval prov;
-				myval owner = {cp->c_addrstr, cp->c_addrstrlen};
+				myval prov, owner;
 				cacherec *cr;
 				int len;
 
+				get_ip(cp, ibuf);
+				owner = cp->c_addrstr;
 				prov.mv_val = strstr(ibuf, "provider=");
 				if (!prov.mv_val)
 					continue;
@@ -555,6 +600,8 @@ out:
 		}
 	}
 
+finish:
+	free(cp);
 	return NULL;
 }
 
