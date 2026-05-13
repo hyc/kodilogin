@@ -108,13 +108,17 @@ static int my_ssl_send(client *cp, char *buf, size_t len) {
 	return SSL_write(cp->c_ssl, buf, len);
 }
 
-static int my_ssl_clos(client *cp) {
-	while (!SSL_shutdown(cp->c_ssl)) {
+static void do_ssl_close(SSL *ssl) {
+	while (!SSL_shutdown(ssl)) {
 		char buf[1024];
-		while (SSL_read(cp->c_ssl, buf, sizeof(buf) >= 0))
+		while (SSL_read(ssl, buf, sizeof(buf) >= 0))
 			;
 	}
-	SSL_free(cp->c_ssl);
+	SSL_free(ssl);
+}
+
+static int my_ssl_clos(client *cp) {
+	do_ssl_close(cp->c_ssl);
 	cp->c_ssl = NULL;
 	return 0;
 }
@@ -797,9 +801,16 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *toktype, myval *tok
 		if (!str || ptr-str < 7)
 			continue;
 		str += 4;
-		if (sscanf(str, "%x", &clen) != 1)
-			continue;
 		*ptr = '\0';
+		{
+			unsigned char *crnl = strchr(str, '\r');
+			unsigned char *xend;
+			if (!crnl)
+				continue;
+			clen = strtol(str, (char **)&xend, 16);
+			if (str == xend || !clen)
+				continue;
+		}
 		str = strchr(str, '\n');
 		if (!str)
 			continue;
@@ -808,6 +819,7 @@ void do_token(client *cp, cacherec *cr, myval *grant, myval *toktype, myval *tok
 		if (ptr-str >= clen)
 			break;
 	}
+	do_ssl_close(ssl);
 	req.mv_val = str;
 	req.mv_len = clen;
 	if (cr) {
