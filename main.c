@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #ifdef _WIN32
@@ -191,6 +192,8 @@ int main( int argc, char *argv[] )
 		exit(1);
 	}
 	clientSecret.mv_len = strlen(clientSecret.mv_val);
+
+	signal(SIGPIPE, SIG_IGN);
 
 	OPENSSL_init_ssl(0, NULL);
 	outctx = SSL_CTX_new(TLS_method());
