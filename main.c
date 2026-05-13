@@ -639,11 +639,11 @@ out:
 			resp.mv_len = sizeof("Unrecognized input")-1;
 			do_resp(cp, CODE_BAD_REQUEST, "text/plain", NULL, &resp);
 		}
-		my_clos(cp);
 		break;
 	}
 
 finish:
+	my_clos(cp);
 	free(cp);
 	return NULL;
 }
